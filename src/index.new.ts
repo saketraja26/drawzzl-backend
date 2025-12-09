@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
@@ -8,7 +8,6 @@ import { registerRoomHandlers } from './handlers/roomHandlers.js';
 import { registerGameHandlers } from './handlers/gameHandlers.js';
 import { registerChatHandlers } from './handlers/chatHandlers.js';
 import { registerDisconnectHandler } from './handlers/disconnectHandler.js';
-import { roomCleanupService } from './services/RoomCleanupService.js';
 
 // ---------------------------------------------------------------------
 // Express & Socket.IO Setup
@@ -36,12 +35,6 @@ const io = new Server(server, {
     ],
     credentials: true 
   },
-  cookie: {
-    name: 'drawzzl_session',
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production'
-  }
 });
 
 // ---------------------------------------------------------------------
@@ -51,11 +44,6 @@ connectDB().catch((err: Error) => {
   console.error('DB connection failed:', err);
   process.exit(1);
 });
-
-// ---------------------------------------------------------------------
-// Start Room Cleanup Service
-// ---------------------------------------------------------------------
-roomCleanupService.start();
 
 // ---------------------------------------------------------------------
 // Socket.IO Connection Handler

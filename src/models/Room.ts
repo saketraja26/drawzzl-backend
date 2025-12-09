@@ -7,6 +7,7 @@ export interface Player {
   score: number;
   isDrawer?: boolean;
   avatar?: number[]; // [colorIdx, eyeIdx, mouthIdx, accessoryIdx]
+  sessionId?: string; // Track session for reconnection
 }
 
 export interface ChatItem {
@@ -21,6 +22,7 @@ export interface ChatItem {
  */
 export interface IRoom extends Document {
   roomId: string;
+  hostId: string; // Original room creator - maintains ownership
   players: Player[];
   maxPlayers: number;
 
@@ -62,6 +64,7 @@ const ChatSchema = new Schema<ChatItem>(
 const RoomSchema = new Schema<IRoom>(
   {
     roomId: { type: String, required: true, unique: true },
+    hostId: { type: String, required: true }, // Original room creator
     players: [
       {
         id: { type: String, required: true },
@@ -69,6 +72,7 @@ const RoomSchema = new Schema<IRoom>(
         score: { type: Number, default: 0 },
         isDrawer: { type: Boolean, default: false },
         avatar: { type: [Number], default: [0, 0, 0, 0] },
+        sessionId: { type: String },
       },
     ],
     maxPlayers: { type: Number, default: 8 },
