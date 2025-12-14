@@ -1,5 +1,3 @@
-import { Socket } from 'socket.io';
-
 /**
  * SessionManager handles player sessions and reconnection logic
  * Sessions persist across disconnects to allow reconnection
@@ -15,11 +13,18 @@ class SessionManager {
    * Create a new session for a socket connection
    */
   createSession(socketId: string): string {
+    // Check if this socket already has an active session and remove it to prevent duplicates
+    const existingSessionId = this.sessions.get(socketId);
+    if (existingSessionId) {
+      console.log(`Removing existing session ${existingSessionId} for socket ${socketId} to prevent duplicates`);
+      this.removeSession(socketId);
+    }
+    
     const sessionId = this.generateSessionId();
     this.sessions.set(socketId, sessionId);
     this.socketToSession.set(sessionId, socketId);
     
-    // Clear any existing timer for this session
+    // Clear any existing timer for this session (shouldn't exist for new session, but safety check)
     const existingTimer = this.sessionTimers.get(sessionId);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -31,20 +36,22 @@ class SessionManager {
 
   /**
    * Reconnect an existing session to a new socket
+   * Strict 1-to-1 binding: One Browser = One Session
    */
   reconnectSession(sessionId: string, newSocketId: string): boolean {
     if (!this.socketToSession.has(sessionId)) {
       return false; // Session doesn't exist or expired
     }
 
-    // Clear the expiration timer
+    // Clear the expiration timer - session is being restored
     const timer = this.sessionTimers.get(sessionId);
     if (timer) {
       clearTimeout(timer);
       this.sessionTimers.delete(sessionId);
+      console.log(`Session ${sessionId} restored - cancelling expiration timer`);
     }
 
-    // Update socket mapping
+    // Update socket mapping - strict 1-to-1 binding
     const oldSocketId = this.socketToSession.get(sessionId);
     if (oldSocketId) {
       this.sessions.delete(oldSocketId);
@@ -53,6 +60,7 @@ class SessionManager {
     this.sessions.set(newSocketId, sessionId);
     this.socketToSession.set(sessionId, newSocketId);
     
+    console.log(`Session ${sessionId} reconnected from socket ${oldSocketId} to ${newSocketId}`);
     return true;
   }
 

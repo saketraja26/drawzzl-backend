@@ -4,7 +4,6 @@ import { roomManager } from './RoomManager.js';
 import { getRandomWordByDifficulty } from '../lib/words.js';
 
 const ROOM_TICK_MS = 1000;
-const TURN_SECONDS = 60;
 const MAX_POINTS = 500;
 const MIN_POINTS = 50;
 const DRAWER_BONUS_PER_GUESSER = 50;
@@ -59,14 +58,14 @@ export class GameEngine {
       io.to(drawer.id).emit('selectWord', {
         words: wordChoices,
         timeLimit: 8,
-        scores: sortedPlayers.map((p: any) => ({ name: p.name, score: p.score || 0, avatar: p.avatar }))
+        scores: sortedPlayers.map((p: any) => ({ name: p.name, score: p.score || 0, avatar: p.avatar, sessionId: p.sessionId }))
       });
 
       // Broadcast to others
       io.to(room.roomId).emit('drawerSelecting', {
         drawerId: drawer.id,
         timeLimit: 8,
-        scores: sortedPlayers.map((p: any) => ({ name: p.name, score: p.score || 0, avatar: p.avatar }))
+        scores: sortedPlayers.map((p: any) => ({ name: p.name, score: p.score || 0, avatar: p.avatar, sessionId: p.sessionId }))
       });
 
       // Auto-select if drawer doesn't choose
@@ -143,6 +142,14 @@ export class GameEngine {
         timeLeft: drawTime,
         round: room.round,
         maxRounds: room.maxRounds || 3,
+        players: room.players.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          score: p.score || 0,
+          avatar: p.avatar,
+          sessionId: p.sessionId, // Include sessionId for frontend identification
+          isDrawer: p.isDrawer
+        }))
       });
 
       if (drawer.id) {
@@ -155,64 +162,93 @@ export class GameEngine {
         console.log(`Cleared previous interval for room ${room.roomId}`);
       }
 
+      // Calculate fixed end time for in-memory calculations
+      const endTime = Date.now() + (drawTime * 1000);
       const halfTime = Math.floor(drawTime / 2);
       const firstHintTime = halfTime;
       const secondHintTime = 15;
 
-      const hintState = { firstRevealed: false, secondRevealed: false };
+      // In-memory state to avoid database reads
+      const gameState = {
+        roomId: room.roomId,
+        currentWord: word,
+        revealedLetters: [...room.revealedLetters],
+        endTime,
+        firstRevealed: false,
+        secondRevealed: false,
+        gameEnded: false
+      };
 
       const timer = setInterval(async () => {
         try {
-          const r = await Room.findOne({ roomId: room.roomId });
-          if (!r) {
-            console.error(`Room ${room.roomId} not found in timer, clearing interval`);
+          // Skip if game already ended
+          if (gameState.gameEnded) {
             clearInterval(timer);
             this.roomIntervals.delete(room.roomId);
-            return;
-          }
-          
-          if (!r.currentWord) {
-            console.log(`No current word for room ${room.roomId}, ending turn`);
-            clearInterval(timer);
-            this.roomIntervals.delete(room.roomId);
-            await this.endTurn(io, room.roomId);
             return;
           }
 
-          const endsAt = r.turnEndsAt ? new Date(r.turnEndsAt).getTime() : 0;
+          // Calculate time left using in-memory endTime
           const now = Date.now();
-          const secs = Math.max(0, Math.ceil((endsAt - now) / 1000));
+          const timeLeft = Math.max(0, Math.ceil((gameState.endTime - now) / 1000));
 
-          // Reveal hints
-          if (!hintState.firstRevealed && secs <= firstHintTime && secs > secondHintTime) {
-            hintState.firstRevealed = true;
-            const newIndices = this.getRevealIndices(r.currentWord, 1, r.revealedLetters);
-            r.revealedLetters = [...r.revealedLetters, ...newIndices];
-            const newHint = this.maskWord(r.currentWord, r.revealedLetters);
-            await r.save();
+          // Reveal first hint
+          if (!gameState.firstRevealed && timeLeft <= firstHintTime && timeLeft > secondHintTime) {
+            gameState.firstRevealed = true;
+            const newIndices = this.getRevealIndices(gameState.currentWord, 1, gameState.revealedLetters);
+            gameState.revealedLetters = [...gameState.revealedLetters, ...newIndices];
+            const newHint = this.maskWord(gameState.currentWord, gameState.revealedLetters);
+            
+            // Save hint to database asynchronously (don't await)
+            this.saveHintToDatabase(room.roomId, gameState.revealedLetters).catch(err => {
+              console.error(`Error saving first hint for room ${room.roomId}:`, err);
+            });
+            
             io.to(room.roomId).emit('hintUpdate', { wordHint: newHint });
           }
 
-          if (!hintState.secondRevealed && secs <= secondHintTime) {
-            hintState.secondRevealed = true;
-            const newIndices = this.getRevealIndices(r.currentWord, 1, r.revealedLetters);
-            r.revealedLetters = [...r.revealedLetters, ...newIndices];
-            const newHint = this.maskWord(r.currentWord, r.revealedLetters);
-            await r.save();
+          // Reveal second hint
+          if (!gameState.secondRevealed && timeLeft <= secondHintTime) {
+            gameState.secondRevealed = true;
+            const newIndices = this.getRevealIndices(gameState.currentWord, 1, gameState.revealedLetters);
+            gameState.revealedLetters = [...gameState.revealedLetters, ...newIndices];
+            const newHint = this.maskWord(gameState.currentWord, gameState.revealedLetters);
+            
+            // Save hint to database asynchronously (don't await)
+            this.saveHintToDatabase(room.roomId, gameState.revealedLetters).catch(err => {
+              console.error(`Error saving second hint for room ${room.roomId}:`, err);
+            });
+            
             io.to(room.roomId).emit('hintUpdate', { wordHint: newHint });
           }
 
-          io.to(room.roomId).emit('tick', { timeLeft: secs });
+          // Emit tick event every second
+          io.to(room.roomId).emit('tick', { timeLeft });
 
-          const everyoneGuessed = roomManager.allGuessed(r);
-
-          if (secs <= 0 || everyoneGuessed) {
+          // Check if we need to end the turn (only check database when necessary)
+          if (timeLeft <= 0) {
+            gameState.gameEnded = true;
             clearInterval(timer);
             this.roomIntervals.delete(room.roomId);
             await this.endTurn(io, room.roomId);
+          } else {
+            // Check if everyone guessed (minimal database read)
+            this.checkIfEveryoneGuessed(room.roomId).then(everyoneGuessed => {
+              if (everyoneGuessed && !gameState.gameEnded) {
+                gameState.gameEnded = true;
+                clearInterval(timer);
+                this.roomIntervals.delete(room.roomId);
+                this.endTurn(io, room.roomId).catch(err => {
+                  console.error(`Error ending turn for room ${room.roomId}:`, err);
+                });
+              }
+            }).catch(err => {
+              console.error(`Error checking if everyone guessed for room ${room.roomId}:`, err);
+            });
           }
         } catch (err) {
           console.error(`Error in game timer for room ${room.roomId}:`, err);
+          gameState.gameEnded = true;
           clearInterval(timer);
           this.roomIntervals.delete(room.roomId);
           // Try to recover
@@ -270,6 +306,7 @@ export class GameEngine {
         name: p.name,
         score: p.score || 0,
         avatar: p.avatar,
+        sessionId: p.sessionId, // Include sessionId for frontend identification
         roundPoints: room.roundPoints.get(p.id) || 0,
       }));
 
@@ -389,15 +426,22 @@ export class GameEngine {
   }
 
   /**
-   * Clean up room timers
+   * Clean up room timers - stops all game loops immediately
+   * Called when room becomes empty to prevent timers running in void
    */
   cleanupRoom(roomId: string): void {
     const timer = this.roomIntervals.get(roomId);
-    if (timer) clearInterval(timer);
+    if (timer) {
+      clearInterval(timer);
+      console.log(`Cleared game timer for empty room ${roomId}`);
+    }
     this.roomIntervals.delete(roomId);
 
     const timeout = this.wordSelectionTimeouts.get(roomId);
-    if (timeout) clearTimeout(timeout);
+    if (timeout) {
+      clearTimeout(timeout);
+      console.log(`Cleared word selection timeout for empty room ${roomId}`);
+    }
     this.wordSelectionTimeouts.delete(roomId);
   }
 
@@ -409,6 +453,35 @@ export class GameEngine {
     if (timeout) {
       clearTimeout(timeout);
       this.wordSelectionTimeouts.delete(roomId);
+    }
+  }
+
+  /**
+   * Save hint to database asynchronously (non-blocking)
+   */
+  private async saveHintToDatabase(roomId: string, revealedLetters: number[]): Promise<void> {
+    try {
+      const room = await Room.findOne({ roomId });
+      if (room) {
+        room.revealedLetters = revealedLetters;
+        await room.save();
+      }
+    } catch (err) {
+      console.error(`Error saving hint to database for room ${roomId}:`, err);
+    }
+  }
+
+  /**
+   * Check if everyone has guessed (minimal database read)
+   */
+  private async checkIfEveryoneGuessed(roomId: string): Promise<boolean> {
+    try {
+      const room = await Room.findOne({ roomId }).select('players correctGuessers');
+      if (!room) return false;
+      return roomManager.allGuessed(room);
+    } catch (err) {
+      console.error(`Error checking if everyone guessed for room ${roomId}:`, err);
+      return false;
     }
   }
 

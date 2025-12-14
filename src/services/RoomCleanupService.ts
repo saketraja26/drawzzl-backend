@@ -3,28 +3,29 @@ import { gameEngine } from './GameEngine.js';
 import { sessionManager } from './SessionManager.js';
 
 /**
- * RoomCleanupService handles cleanup of inactive rooms
- * Runs periodically to remove rooms where all players are offline
+ * RoomCleanupService - FALLBACK ONLY for crashed rooms
+ * Handles cleanup of rooms that should have been deleted but weren't due to server crashes
+ * Normal room lifecycle is handled by PlayerManager with immediate deletion + grace period
  */
 export class RoomCleanupService {
   private cleanupInterval: NodeJS.Timeout | null = null;
-  private readonly CLEANUP_INTERVAL = 2 * 60 * 1000; // Check every 2 minutes
-  private readonly ROOM_TIMEOUT = 10 * 60 * 1000; // Delete room if inactive for 10 minutes
+  private readonly CLEANUP_INTERVAL = 5 * 60 * 1000; // Check every 5 minutes (less frequent)
+  private readonly FALLBACK_TIMEOUT = 1 * 60 * 1000; // Delete empty rooms older than 1 minute
 
   /**
-   * Start the cleanup service
+   * Start the cleanup service (fallback only)
    */
   start(): void {
     if (this.cleanupInterval) return;
 
-    console.log('Room cleanup service started');
+    console.log('Room cleanup service started (fallback mode for crashed rooms)');
     
     this.cleanupInterval = setInterval(async () => {
-      await this.cleanupInactiveRooms();
+      await this.cleanupCrashedRooms();
     }, this.CLEANUP_INTERVAL);
 
     // Run immediately on start
-    this.cleanupInactiveRooms();
+    this.cleanupCrashedRooms();
   }
 
   /**
@@ -39,41 +40,36 @@ export class RoomCleanupService {
   }
 
   /**
-   * Clean up rooms where all players are offline
+   * Clean up rooms that should have been deleted but weren't (server crash recovery)
+   * Only handles edge cases where normal PlayerManager deletion failed
    */
-  private async cleanupInactiveRooms(): Promise<void> {
+  private async cleanupCrashedRooms(): Promise<void> {
     try {
       const rooms = await Room.find({});
       const now = Date.now();
+      let cleanedCount = 0;
 
       for (const room of rooms) {
-        // Check if all players have expired sessions
-        const allPlayersOffline = room.players.every((player) => {
-          if (!player.sessionId) return true; // No session = offline
-          return !sessionManager.hasSession(player.sessionId);
-        });
-
-        if (allPlayersOffline) {
+        // Only clean up completely empty rooms (should have been deleted by PlayerManager)
+        if (room.players.length === 0) {
           const roomAge = now - new Date(room.createdAt).getTime();
           
-          // Delete room if all players offline and room is old enough
-          if (roomAge > this.ROOM_TIMEOUT) {
+          // Delete empty rooms older than 1 minute (fallback for crashed deletions)
+          if (roomAge > this.FALLBACK_TIMEOUT) {
             await Room.deleteOne({ roomId: room.roomId });
             gameEngine.cleanupRoom(room.roomId);
+            cleanedCount++;
             
-            // Clean up all player sessions
-            room.players.forEach((player) => {
-              if (player.sessionId) {
-                sessionManager.removeSession(player.id);
-              }
-            });
-            
-            console.log(`Cleaned up inactive room: ${room.roomId} (${room.players.length} offline players)`);
+            console.log(`FALLBACK: Cleaned up crashed empty room: ${room.roomId} (age: ${Math.round(roomAge / 1000)}s)`);
           }
         }
       }
+
+      if (cleanedCount > 0) {
+        console.log(`Fallback cleanup completed: ${cleanedCount} crashed rooms deleted`);
+      }
     } catch (err) {
-      console.error('Error in room cleanup:', err);
+      console.error('Error in fallback room cleanup:', err);
     }
   }
 
@@ -81,7 +77,7 @@ export class RoomCleanupService {
    * Manually trigger cleanup (for testing)
    */
   async triggerCleanup(): Promise<void> {
-    await this.cleanupInactiveRooms();
+    await this.cleanupCrashedRooms();
   }
 }
 

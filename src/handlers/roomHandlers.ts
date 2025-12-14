@@ -50,6 +50,7 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
       const newRoom = new Room({
         roomId,
         hostId: socket.id, // Track original host
+        hostSessionId: sessionId, // Track host by session ID for persistence
         players: [{ 
           id: socket.id, 
           name: cleanedName, 
@@ -73,6 +74,9 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
         revealedLetters: [],
       });
       await newRoom.save();
+      
+      // CRITICAL: Track player immediately after room save
+      playerManager.trackPlayer(socket.id, roomId);
 
       socket.join(roomId);
       
@@ -115,10 +119,17 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
       // Update player's socket ID
       player.id = socket.id;
       await room.save();
+      
+      // CRITICAL: Track player immediately after room save
+      playerManager.trackPlayer(socket.id, roomId);
 
-      const isHost = room.hostId === socket.id;
+      const isHost = room.hostSessionId === sessionId;
 
       socket.join(roomId);
+      
+      // Cancel room deletion timer - player rejoined
+      playerManager.cancelRoomDeletion(roomId);
+      
       socket.emit('reconnected', { 
         roomId, 
         isHost,
@@ -182,10 +193,16 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
         return;
       }
 
+      // CRITICAL: Track player immediately after adding to room
+      playerManager.trackPlayer(socket.id, roomId);
+      
       // Check if this player is the host AFTER adding them
-      const isHost = room.hostId === socket.id;
+      const isHost = room.hostSessionId === sessionId;
 
       socket.join(roomId);
+      
+      // Cancel room deletion timer - new player joined
+      playerManager.cancelRoomDeletion(roomId);
       
       // Send session info via handshake data
       socket.handshake.auth = { ...socket.handshake.auth, sessionId, roomId };
@@ -210,8 +227,9 @@ export function registerRoomHandlers(io: Server, socket: Socket) {
         return;
       }
 
-      // Check if player is the original host
-      if (room.hostId !== socket.id) {
+      // Check if player is the original host by session ID
+      const player = room.players.find((p: any) => p.id === socket.id);
+      if (!player || room.hostSessionId !== player.sessionId) {
         socket.emit('error', { message: 'Only the room owner can change settings' });
         return;
       }

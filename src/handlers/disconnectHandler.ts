@@ -11,9 +11,10 @@ export function registerDisconnectHandler(io: Server, socket: Socket) {
   socket.on('disconnect', async () => {
     console.log('Player disconnected:', socket.id);
 
-    const rooms = Array.from(socket.rooms).filter(r => r !== socket.id);
+    // Use manual room tracking instead of socket.rooms
+    const roomId = playerManager.getRoomId(socket.id);
     
-    for (const roomId of rooms) {
+    if (roomId) {
       await playerManager.removePlayerFromRoom(io, roomId, socket.id, 'disconnect');
     }
   });

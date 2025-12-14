@@ -15,8 +15,9 @@ export function registerGameHandlers(io: Server, socket: Socket) {
         return;
       }
 
-      // Only original host can start game
-      if (room.hostId !== socket.id) {
+      // Only original host can start game by session ID
+      const player = room.players.find((p: any) => p.id === socket.id);
+      if (!player || room.hostSessionId !== player.sessionId) {
         socket.emit('error', { message: 'Only the room owner can start the game' });
         return;
       }
@@ -63,10 +64,12 @@ export function registerGameHandlers(io: Server, socket: Socket) {
   });
 
   /**
-   * DRAW
+   * SIMPLE DRAW HANDLER - Works with Konva line format
    */
   socket.on('draw', ({ roomId, lines }) => {
-    socket.to(roomId).emit('draw', { lines });
+    if (roomId) {
+      socket.to(roomId).emit('draw', { lines });
+    }
   });
 
   /**

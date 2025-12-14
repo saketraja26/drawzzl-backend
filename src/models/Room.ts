@@ -23,6 +23,7 @@ export interface ChatItem {
 export interface IRoom extends Document {
   roomId: string;
   hostId: string; // Original room creator - maintains ownership
+  hostSessionId: string; // Session ID of the host for persistent host tracking
   players: Player[];
   maxPlayers: number;
 
@@ -65,6 +66,7 @@ const RoomSchema = new Schema<IRoom>(
   {
     roomId: { type: String, required: true, unique: true },
     hostId: { type: String, required: true }, // Original room creator
+    hostSessionId: { type: String, required: true }, // Session ID of the host
     players: [
       {
         id: { type: String, required: true },

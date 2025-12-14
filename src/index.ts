@@ -17,7 +17,7 @@ const app = express();
 app.use(cors());
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.status(200).json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
@@ -41,21 +41,11 @@ const io = new Server(server, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production'
-  }
+  },
+  // Mobile stability settings - prevent disconnects when screen turns off
+  pingTimeout: 60000, // 60 seconds
+  pingInterval: 25000  // 25 seconds
 });
-
-// ---------------------------------------------------------------------
-// Database Connection
-// ---------------------------------------------------------------------
-connectDB().catch((err: Error) => {
-  console.error('DB connection failed:', err);
-  process.exit(1);
-});
-
-// ---------------------------------------------------------------------
-// Start Room Cleanup Service
-// ---------------------------------------------------------------------
-roomCleanupService.start();
 
 // ---------------------------------------------------------------------
 // Socket.IO Connection Handler
@@ -71,9 +61,31 @@ io.on('connection', (socket) => {
 });
 
 // ---------------------------------------------------------------------
-// Server Start
+// Server Startup Function
 // ---------------------------------------------------------------------
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`drawzzl backend running on port ${PORT}`);
-});
+async function startServer() {
+  try {
+    // Wait for database connection to complete
+    console.log('Connecting to database...');
+    await connectDB();
+    console.log('Database connected successfully');
+
+    // Start room cleanup service only after DB is ready
+    console.log('Starting room cleanup service...');
+    roomCleanupService.start();
+
+    // Start the server
+    const PORT = process.env.PORT || 4000;
+    server.listen(PORT, () => {
+      console.log(`drawzzl backend running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Start the application
+// ---------------------------------------------------------------------
+startServer();
