@@ -198,6 +198,25 @@ class SessionManager {
     return disconnected;
   }
 
+  /**
+   * Get session statistics for monitoring
+   */
+  getStats(): { active: number; disconnected: number; total: number } {
+    let active = 0;
+    let disconnected = 0;
+    
+    for (const status of this.sessionStatus.values()) {
+      if (status === 'active') active++;
+      else if (status === 'disconnected') disconnected++;
+    }
+    
+    return {
+      active,
+      disconnected,
+      total: active + disconnected
+    };
+  }
+
   private generateSessionId(): string {
     return `session_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
   }

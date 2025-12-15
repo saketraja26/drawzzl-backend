@@ -5,10 +5,13 @@ import cors from 'cors';
 import 'dotenv/config';
 import { connectDB } from './lib/db.js';
 import { registerRoomHandlers } from './handlers/roomHandlers.js';
-import { registerDisconnectHandlers } from './handlers/disconnectHandler.js';
+import { registerGameHandlers } from './handlers/gameHandlers.js';
+import { registerChatHandlers } from './handlers/chatHandlers.js';
+import { registerDisconnectHandler } from './handlers/disconnectHandler.js';
 import { sessionManager } from './services/SessionManager.js';
 import { playerManager } from './services/PlayerManager.js';
 import { gameEngine } from './services/GameEngine.js';
+import { roomCleanupService } from './services/RoomCleanupService.js';
 
 /**
  * Optimized Drawzzl Backend Server
@@ -74,12 +77,19 @@ const io = new Server(server, {
 });
 
 // ---------------------------------------------------------------------
-// Database Connection
+// Database Connection and Services
 // ---------------------------------------------------------------------
-connectDB().catch((err: Error) => {
-  console.error('DB connection failed:', err);
-  process.exit(1);
-});
+connectDB()
+  .then(() => {
+    console.log('Database connected successfully');
+    // Start room cleanup service after DB is ready
+    roomCleanupService.start();
+    console.log('Room cleanup service started');
+  })
+  .catch((err: Error) => {
+    console.error('DB connection failed:', err);
+    process.exit(1);
+  });
 
 // ---------------------------------------------------------------------
 // Socket.IO Connection Handling
@@ -88,8 +98,10 @@ io.on('connection', (socket: Socket) => {
   console.log(`Player connected: ${socket.id} from ${socket.handshake.address}`);
 
   // Register all event handlers
-  registerRoomHandlers(socket, io);
-  registerDisconnectHandlers(socket, io);
+  registerRoomHandlers(io, socket);
+  registerGameHandlers(io, socket);
+  registerChatHandlers(io, socket);
+  registerDisconnectHandler(io, socket);
 
   // Send connection confirmation
   socket.emit('connected', { 
