@@ -29,9 +29,38 @@ export function registerGameHandlers(io: Server, socket: Socket) {
 
       if (room.gameStarted) return;
 
+      // RESET GAME STATE FOR NEW GAME
+      console.log(`🔄 RESETTING GAME STATE for room ${roomId} - new game starting`);
+      
+      // 1. Reset Player Scores
+      console.log(`📊 RESETTING SCORES: Clearing all player scores to 0`);
+      room.players.forEach((player: any) => {
+        const oldScore = player.score || 0;
+        player.score = 0;
+        console.log(`  - ${player.name}: ${oldScore} → 0`);
+      });
+
+      // 2. Clear Round Points
+      console.log(`🎯 CLEARING ROUND POINTS: Resetting round points map`);
+      room.roundPoints = new Map();
+
+      // 3. Reset Game State
+      console.log(`🎮 RESETTING GAME STATE: Round=1, DrawerIndex=0`);
       room.round = 1;
       room.drawerIndex = 0;
+      
+      // Clear any previous game state
+      room.currentWord = undefined;
+      room.correctGuessers = [];
+      room.revealedLetters = [];
+      
+      // Mark players array as modified for Mongoose
+      room.markModified('players');
+      room.markModified('roundPoints');
+      
+      // CRITICAL: Save all resets to database before starting first turn
       await room.save();
+      console.log(`💾 GAME RESET COMPLETE: All scores and state reset, starting fresh game`);
 
       await gameEngine.startTurn(io, room);
     } catch (err) {

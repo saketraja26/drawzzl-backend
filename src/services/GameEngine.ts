@@ -68,35 +68,69 @@ export class GameEngine {
         scores: sortedPlayers.map((p: any) => ({ name: p.name, score: p.score || 0, avatar: p.avatar, sessionId: p.sessionId }))
       });
 
-      // Auto-select if drawer doesn't choose
+      // ROBUST AUTO-SELECT: Prevent turn skipping with comprehensive error handling
       const timeout = setTimeout(async () => {
         try {
+          console.log(`🎯 AUTO-SELECT TRIGGERED for room ${room.roomId} - checking if word selection needed`);
+          
+          // STEP 1: Fetch fresh room state
           const freshRoom = await Room.findOne({ roomId: room.roomId });
           if (!freshRoom) {
-            console.error(`Room ${room.roomId} not found during word selection timeout`);
+            console.error(`❌ Room ${room.roomId} not found during word selection timeout - room may have been deleted`);
             return;
           }
           
+          // STEP 2: Check if word already selected
           if (freshRoom.currentWord) {
-            console.log(`Word already selected for room ${room.roomId}, skipping auto-select`);
+            console.log(`✅ Word already selected for room ${room.roomId}: "${freshRoom.currentWord}" - skipping auto-select`);
             return;
           }
 
+          // STEP 3: Robust word selection with fallback
+          console.log(`🎲 AUTO-SELECTING word for room ${room.roomId} from choices:`, wordChoices);
           const randomIndex = Math.floor(Math.random() * wordChoices.length);
-          const selectedWord = wordChoices[randomIndex] || 'default';
+          const selectedWord = wordChoices[randomIndex] || wordChoices[0] || 'drawing'; // Multiple fallbacks
+          
+          // STEP 4: CRITICAL STATE UPDATE - Set both word and timing
           freshRoom.currentWord = selectedWord;
+          freshRoom.turnEndsAt = new Date(Date.now() + (freshRoom.drawTime * 1000));
+          
+          // STEP 5: CRITICAL SAVE - Ensure word is locked in database
           await freshRoom.save();
+          console.log(`💾 CRITICAL SAVE COMPLETE: Word "${selectedWord}" locked in database for room ${room.roomId}`);
 
-          console.log(`Auto-selected word "${selectedWord}" for room ${room.roomId}`);
-          await this.startDrawingPhase(io, freshRoom, selectedWord, drawTime);
+          // STEP 6: Start drawing phase with robust error handling
+          console.log(`🎨 Starting drawing phase for room ${room.roomId} with auto-selected word: "${selectedWord}"`);
+          await this.startDrawingPhase(io, freshRoom, selectedWord, freshRoom.drawTime);
+          
         } catch (err) {
-          console.error(`Error in word selection timeout for room ${room.roomId}:`, err);
-          // Try to recover by ending the turn
+          console.error(`❌ CRITICAL ERROR in word selection timeout for room ${room.roomId}:`, err);
+          
+          // ROBUST RECOVERY: Try to save a fallback word before ending turn
+          try {
+            const recoveryRoom = await Room.findOne({ roomId: room.roomId });
+            if (recoveryRoom && !recoveryRoom.currentWord) {
+              console.log(`🔧 RECOVERY ATTEMPT: Setting fallback word for room ${room.roomId}`);
+              recoveryRoom.currentWord = 'drawing'; // Safe fallback word
+              recoveryRoom.turnEndsAt = new Date(Date.now() + (recoveryRoom.drawTime * 1000));
+              await recoveryRoom.save();
+              await this.startDrawingPhase(io, recoveryRoom, 'drawing', recoveryRoom.drawTime);
+              console.log(`✅ RECOVERY SUCCESS: Turn saved with fallback word for room ${room.roomId}`);
+              return;
+            }
+          } catch (recoveryErr) {
+            console.error(`❌ RECOVERY FAILED for room ${room.roomId}:`, recoveryErr);
+          }
+          
+          // Last resort: End turn only if all recovery attempts fail
+          console.log(`⚠️ LAST RESORT: Ending turn for room ${room.roomId} after all recovery attempts failed`);
           await this.endTurn(io, room.roomId);
         }
       }, 8000);
 
       this.wordSelectionTimeouts.set(room.roomId, timeout);
+      
+      console.log(`⏰ WORD SELECTION TIMER SET: 8 second timeout active for room ${room.roomId}`);
 
       room.markModified?.('players');
       await room.save();
@@ -120,9 +154,27 @@ export class GameEngine {
     try {
       const drawer = roomManager.getDrawer(room);
       if (!drawer) {
-        console.error(`No drawer found for room ${room.roomId} in drawing phase`);
+        console.error(`❌ No drawer found for room ${room.roomId} in drawing phase`);
         await this.endTurn(io, room.roomId);
         return;
+      }
+
+      // FAIL-SAFE: Check drawer status but don't skip turn unnecessarily
+      const drawerPlayer = room.players.find((p: any) => p.id === drawer.id);
+      const isDrawerOnline = drawerPlayer && drawerPlayer.isOnline !== false;
+      
+      if (!isDrawerOnline) {
+        console.log(`⚠️ DRAWER STATUS: Drawer ${drawer.name} appears offline in room ${room.roomId}`);
+        console.log(`🎯 CONTINUING TURN: Turn will proceed - drawer can reconnect and other players can participate`);
+        
+        // Notify room that drawer may be disconnected but turn continues
+        io.to(room.roomId).emit('chat', {
+          id: 'system',
+          name: 'System',
+          msg: `${drawer.name} may be disconnected but the turn continues. They can rejoin anytime!`
+        });
+      } else {
+        console.log(`✅ DRAWER READY: Drawer ${drawer.name} is online and ready in room ${room.roomId}`);
       }
 
       room.roundPoints = new Map();
@@ -199,10 +251,7 @@ export class GameEngine {
             gameState.revealedLetters = [...gameState.revealedLetters, ...newIndices];
             const newHint = this.maskWord(gameState.currentWord, gameState.revealedLetters);
             
-            // Save hint to database asynchronously (don't await)
-            this.saveHintToDatabase(room.roomId, gameState.revealedLetters).catch(err => {
-              console.error(`Error saving first hint for room ${room.roomId}:`, err);
-            });
+            // Note: Hint will be saved when turn ends - no database writes during timer loop
             
             io.to(room.roomId).emit('hintUpdate', { wordHint: newHint });
           }
@@ -214,10 +263,7 @@ export class GameEngine {
             gameState.revealedLetters = [...gameState.revealedLetters, ...newIndices];
             const newHint = this.maskWord(gameState.currentWord, gameState.revealedLetters);
             
-            // Save hint to database asynchronously (don't await)
-            this.saveHintToDatabase(room.roomId, gameState.revealedLetters).catch(err => {
-              console.error(`Error saving second hint for room ${room.roomId}:`, err);
-            });
+            // Note: Hint will be saved when turn ends - no database writes during timer loop
             
             io.to(room.roomId).emit('hintUpdate', { wordHint: newHint });
           }
@@ -231,21 +277,8 @@ export class GameEngine {
             clearInterval(timer);
             this.roomIntervals.delete(room.roomId);
             await this.endTurn(io, room.roomId);
-          } else {
-            // Check if everyone guessed (minimal database read)
-            this.checkIfEveryoneGuessed(room.roomId).then(everyoneGuessed => {
-              if (everyoneGuessed && !gameState.gameEnded) {
-                gameState.gameEnded = true;
-                clearInterval(timer);
-                this.roomIntervals.delete(room.roomId);
-                this.endTurn(io, room.roomId).catch(err => {
-                  console.error(`Error ending turn for room ${room.roomId}:`, err);
-                });
-              }
-            }).catch(err => {
-              console.error(`Error checking if everyone guessed for room ${room.roomId}:`, err);
-            });
           }
+          // Note: Everyone guessed check removed from timer loop - will be handled by guess events
         } catch (err) {
           console.error(`Error in game timer for room ${room.roomId}:`, err);
           gameState.gameEnded = true;
@@ -453,6 +486,9 @@ export class GameEngine {
     if (timeout) {
       clearTimeout(timeout);
       this.wordSelectionTimeouts.delete(roomId);
+      console.log(`⏰ TIMEOUT CLEARED: Word selection timeout cancelled for room ${roomId} (manual selection)`);
+    } else {
+      console.log(`⏰ NO TIMEOUT: No active word selection timeout found for room ${roomId}`);
     }
   }
 

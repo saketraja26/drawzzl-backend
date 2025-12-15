@@ -8,6 +8,8 @@ export interface Player {
   isDrawer?: boolean;
   avatar?: number[]; // [colorIdx, eyeIdx, mouthIdx, accessoryIdx]
   sessionId?: string; // Track session for reconnection
+  isOnline?: boolean; // Track if player is currently connected
+  disconnectedAt?: Date; // When player disconnected (for grace period)
 }
 
 export interface ChatItem {

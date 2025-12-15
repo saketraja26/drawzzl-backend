@@ -53,6 +53,22 @@ export class RoomManager {
   }
 
   /**
+   * Find existing player by session ID (for session merging)
+   */
+  findPlayerBySession(room: any, sessionId: string): Player | undefined {
+    return room.players.find((p: Player) => p.sessionId === sessionId);
+  }
+
+  /**
+   * Find disconnected player by name (for session merging)
+   */
+  findDisconnectedPlayerByName(room: any, playerName: string): Player | undefined {
+    return room.players.find((p: Player) => 
+      p.name === playerName && (p.isOnline === false || !p.isOnline)
+    );
+  }
+
+  /**
    * Add player to room
    */
   async addPlayer(room: any, player: Player): Promise<boolean> {
@@ -115,6 +131,42 @@ export class RoomManager {
   allGuessed(room: any): boolean {
     const nonDrawers = Math.max(0, room.players.length - 1);
     return (room.correctGuessers?.length || 0) >= nonDrawers;
+  }
+
+  /**
+   * Remove duplicate players (safety cleanup for edge cases)
+   * This removes any duplicate entries that might exist due to race conditions
+   */
+  async removeDuplicatePlayers(room: any): Promise<boolean> {
+    const seenNames = new Set<string>();
+    const seenSessions = new Set<string>();
+    const uniquePlayers: Player[] = [];
+    let foundDuplicates = false;
+
+    for (const player of room.players) {
+      const isDuplicateName = seenNames.has(player.name);
+      const isDuplicateSession = player.sessionId && seenSessions.has(player.sessionId);
+      
+      if (isDuplicateName || isDuplicateSession) {
+        console.log(`🧹 DUPLICATE CLEANUP: Removing duplicate player ${player.name} (${player.id})`);
+        foundDuplicates = true;
+        continue;
+      }
+      
+      seenNames.add(player.name);
+      if (player.sessionId) {
+        seenSessions.add(player.sessionId);
+      }
+      uniquePlayers.push(player);
+    }
+
+    if (foundDuplicates) {
+      room.players = uniquePlayers;
+      await room.save();
+      console.log(`🧹 CLEANUP COMPLETE: Removed duplicates, ${uniquePlayers.length} players remain`);
+    }
+
+    return foundDuplicates;
   }
 }
 
